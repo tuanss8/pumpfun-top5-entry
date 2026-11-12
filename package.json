@@ -1,6 +1,6 @@
 {
-  "name": "pumpfun-top5-entry-v2",
-  "version": "2.0.0",
+  "name": "pumpfun-top5-entry",
+  "version": "1.0.0",
   "type": "module",
   "main": "main.ts",
   "license": "MIT"

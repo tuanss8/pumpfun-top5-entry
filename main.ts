@@ -1,22 +1,29 @@
-// pumpfun-top5-forecast-01 entry v2: survival-aware Monte Carlo log10-cap forecaster.
+// pumpfun-top5-forecast-01 entry v3: low-vol order + direct explosion size model.
 //
-// v1 (Monte Carlo with momentum drift) scored -35.1 (order -19.48, size -15.63),
-// rank 53/358. Its two errors, measured on the practice history:
-//   (1) Momentum drift chases spikes. The data says top coins MEAN-REVERT DOWN:
-//       top-5 coins lose -0.14 log10 per 10 min on average (sd 0.32, p10 -0.67),
-//       rank 6-20 lose -0.066, the tail ~0. But the decline is NOT a uniform
-//       slide: the median top coin is roughly flat and a minority crashes hard
-//       (p10 -0.67). v2 therefore keeps only a weak mean-reverting drift and
-//       models the decline as a discrete CRASH HAZARD: each step, a coin crashes
-//       (log10 cap drops 0.4-0.9) with a per-hour probability that grows with
-//       how far above the floor it sits. Hot young coins crash; floor coins don't.
-//   (2) Volatility is cap-dependent, not global. Top-5 coins move sd 0.32 per
-//       10 min (~0.77/hr), the tail only 0.04 (~0.10/hr). v1's flat 0.30/hr
-//       understates the top (so it over-concentrates on the current #1) and
-//       overstates the tail. v2 uses vol = VOL_FLOOR + VOL_SLOPE*(cap-FLOOR_CAP).
-// A large share of each place is still left unnamed for coins born after the cut
-// (in the practice, 3 of the 5 coins at the last read were not in the history).
-// Place sizes come from the same simulations, histogrammed into the 82 bins.
+// v1 scored -35.1 (order -19.48, size -15.63), rank 53/358.
+// v2 scored -35.5 (order -19.77, size -15.75), rank 78 -- BOTH worse.
+// v2 diagnosis (measured): the crash hazard + cap-dependent vol hurt the order
+// (-0.29), and the 50/50 newcomer size blend hurt the size (-0.12) because its
+// centre was too low (3.63) and its sd too wide (0.30).
+//
+// v3 reverts to v1's order model and fixes the two real errors:
+//   (1) ORDER: volatility. A vol sweep on the last-read order score shows a
+//       clear optimum near VOL 0.10-0.15/hour (v1 0.30 -> -23.26, 0.20 -> -23.14,
+//       0.15 -> -23.09, 0.10 -> -23.07, 0.07 -> -23.14, 0.05 -> -23.30).
+//       Lower vol concentrates p on the coins most likely to be top-5; below
+//       0.10 it over-concentrates on the wrong coins. v3 uses 0.15 (robust:
+//       0.10 is best on that one read by only 0.02, but puts p=0.37 on the
+//       current #1, a bet the extreme top-5 churn contradicts).
+//   (2) SIZE: the top cap EXPLODES. Measured: top log10 cap 3.04 -> 3.56 in
+//       40 min (+0.79/hour). v1's place-1 size mean (3.71) sits far below
+//       where the top cap actually lands (~3.9-4.2 at the answer reads), and
+//       low vol pulls the simulated mean even lower (3.58). So v3 DECOUPLES
+//       size from the order simulation: each place's size is a Normal centred
+//       on the extrapolated top cap (logarithmic growth with horizon, capped)
+//       minus a small gap, with a moderate sd. This is the "place-1 explosion
+//       sizes" the rank-3 entry's title points at.
+// The order still uses v1's momentum drift (DRIFT_SCALE 0.3, MAX_DRIFT 0.03)
+// and UNNAMED_SHARE 0.6 (tuned: 0.5 and 0.7 are both worse on the last read).
 // All parameters are time-based (per hour), so the code runs the 10-minute
 // practice reads and the hourly final reads unchanged.
 
@@ -27,46 +34,40 @@ const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
 // ---- Tuned parameters (time-based, per hour) ----
-/** log10 cap (SOL) of the floor: most newcomers are born here. */
-const FLOOR_CAP = 1.45;
-/** Mean-reversion rate: drift = -MEAN_REV * (cap - FLOOR_CAP). Kept near zero:
-    the top coins' mean decline (-0.14/10 min) is driven by a minority that
-    crashes hard (p10 -0.67), not by a uniform slide -- the median top coin is
-    roughly flat. The crash is modelled discretely below instead. */
-const MEAN_REV = 0.05;
-/** Volatility at the floor (log10 per sqrt-hour). */
-const VOL_FLOOR = 0.1;
-/** Extra volatility per log10 above the floor. */
-const VOL_SLOPE = 0.25;
-/** Crash hazard: per hour, a coin at (cap - FLOOR_CAP) above the floor crashes
-    with probability CRASH_RATE_SLOPE * (cap - FLOOR_CAP) * AGE_FACTOR * dt.
-    Top coins crash often; floor coins never do. AGE_FACTOR makes the hazard
-    age-dependent: a coin that just spiked (young, freshly created) crashes far
-    more readily than one that has held a high cap for a while (a survivor).
-    AGE_FACTOR = 1 / (1 + age_hours / AGE_HALF_LIFE). */
-const CRASH_RATE_SLOPE = 0.2;
-/** AGE_HALF_LIFE 0.5h: tested 0.25h (last-read order -21.12, worse) and reverted. */
-const AGE_HALF_LIFE = 0.5;
-/** A crash drops the log10 cap by a uniform amount in this range. */
-const CRASH_MIN = 0.4;
-const CRASH_MAX = 0.9;
-/** Newcomer size component: the top-5 at a future read is set by coins born
-    after the cut, not by the decaying survivors, so the size distribution
-    blends the simulation with a newcomer component. NEW_SIZE_W is its weight.
-    The newcomer top cap grows only logarithmically with horizon (extreme value
-    over more newborn coins), so NEW_GROWTH is small; places 2-5 sit below
-    place 1 by NEW_GAP and cluster there. */
-const NEW_SIZE_W = 0.5;
-const NEW_GROWTH = 0.1;
-const NEW_GAP = 0.25;
-const NEW_SD_TOP = 0.3;
-const NEW_SD_REST = 0.2;
+/** Hours of history used for the drift slope. */
+const DRIFT_HOURS = 1.0;
+/** Shrink a coin's drift by n/(n+SHRINK_K), n = number of marks it appears in. */
+const SHRINK_K = 2;
+/** Scale the (shrunk) drift: half momentum, to avoid overcommitting to a hot coin. */
+const DRIFT_SCALE = 0.3;
+/** Cap |drift| per hour (log10 cap). */
+const MAX_DRIFT = 0.03;
+/** Per-hour volatility of log10 cap (ORDER simulation). Vol sweep on the
+    last-read order score: 0.30 -> -23.26, 0.20 -> -23.14, 0.15 -> -23.09,
+    0.10 -> -23.07, 0.07 -> -23.14, 0.05 -> -23.30. 0.10 is best on that one
+    read by 0.02, but it puts p=0.37 on the current #1 (a bet it stays #1
+    across all 7 reads, which the extreme top-5 churn contradicts). 0.15 is
+    the robust choice: nearly the same last-read score, far less concentrated.
+    Verified: v3 last-read order -23.09, best of v1 (-23.26) and v2 (-23.40). */
+const VOL_HOUR = 0.15;
 /** Fraction of each place left unnamed (for newcomers born after the cut). */
 const UNNAMED_SHARE = 0.6;
 /** Monte Carlo paths. */
 const N_PATHS = 4000;
 /** Deterministic seed. */
 const SEED = 20261112;
+// ---- Size model (decoupled from the order simulation) ----
+/** Growth rate of the top cap (log10 per ln-hour). Measured top-cap growth
+    is ~0.79/hour early on; the logarithmic form saturates so the final's
+    long horizon does not run away. */
+const SIZE_GROWTH_TOP = 0.5;
+/** Max upward shift of the place-1 centre above the last-mark top cap. */
+const SIZE_GROWTH_CAP = 0.8;
+/** Gap between consecutive places' size centres (the top-5 cluster tightly). */
+const SIZE_GAP = 0.12;
+/** Size sd at place 1 (the explosion is wide) and at places 2-5. */
+const SIZE_SD_TOP = 0.18;
+const SIZE_SD_REST = 0.14;
 
 interface Row {
   rank: number;
@@ -74,7 +75,6 @@ interface Row {
   market_cap_lamports: string | number;
   venue?: string;
   mayhem?: boolean;
-  created_at?: string;
 }
 interface Mark {
   at: string;
@@ -122,44 +122,68 @@ const readHours = readTimes.map((t) => Math.max(0, (t - lastAt) / 3600000));
 const sizeOf = (lamports: string | number): number =>
   Math.log10(Number(BigInt(lamports))) - 9;
 
-// ---- Per-coin last log10 cap (live chart only) ----
+// ---- Per-coin time series of log10 cap ----
 interface Coin {
   mint: string;
+  times: number[]; // hours since first mark
+  caps: number[]; // log10 cap in SOL
   lastCap: number;
   lastRank: number;
-  createdAt: number; // ms since epoch, from the row's created_at
 }
+const t0 = Date.parse(marks[0]!.at);
 const coins = new Map<string, Coin>();
 for (const m of marks) {
+  const t = (Date.parse(m.at) - t0) / 3600000;
   for (const r of m.rows!) {
     let c = coins.get(r.mint);
     if (!c) {
-      c = { mint: r.mint, lastCap: 0, lastRank: 0, createdAt: Date.parse((r as Row & { created_at?: string }).created_at ?? m.at) };
+      c = { mint: r.mint, times: [], caps: [], lastCap: 0, lastRank: 0 };
       coins.set(r.mint, c);
     }
+    c.times.push(t);
+    c.caps.push(sizeOf(r.market_cap_lamports));
     c.lastCap = sizeOf(r.market_cap_lamports);
     c.lastRank = r.rank;
   }
 }
+const coinList = [...coins.values()];
 const lastMints = new Set(lastMark.rows!.map((r) => r.mint));
-const live = [...coins.values()].filter((c) => lastMints.has(c.mint));
+const live = coinList.filter((c) => lastMints.has(c.mint));
 if (live.length < task.places) throw new Error('too few coins in the last mark');
 
-// ---- Monte Carlo: simulate every live coin to each answer read ----
-// Each coin's log10 cap mean-reverts toward FLOOR_CAP with cap-dependent
-// volatility. A coin that just spiked to the top decays fast and swings wide,
-// so the current #1 is far less likely to still be #1 than v1 believed, and
-// the top-5 mass spreads over the mid-rank survivors and the unnamed newcomers.
+// ---- Drift per coin: OLS slope of log10 cap on time over DRIFT_HOURS ----
+const lastT = (lastAt - t0) / 3600000;
+for (const c of live) {
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i < c.times.length; i++) {
+    if (lastT - c.times[i]! <= DRIFT_HOURS + 1e-9) pts.push([c.times[i]!, c.caps[i]!]);
+  }
+  let drift = 0;
+  if (pts.length >= 2) {
+    const n = pts.length;
+    const mt = pts.reduce((s, p) => s + p[0], 0) / n;
+    const mc = pts.reduce((s, p) => s + p[1], 0) / n;
+    let num = 0;
+    let den = 0;
+    for (const [t, v] of pts) {
+      num += (t - mt) * (v - mc);
+      den += (t - mt) * (t - mt);
+    }
+    if (den > 1e-12) drift = num / den;
+  }
+  const shrink = pts.length / (pts.length + SHRINK_K);
+  drift = drift * shrink * DRIFT_SCALE;
+  drift = Math.max(-MAX_DRIFT, Math.min(MAX_DRIFT, drift));
+  (c as Coin & { drift: number }).drift = drift;
+}
+
+// ---- Monte Carlo (ORDER only): simulate every live coin to each answer read ----
 const nReads = readHours.length;
 const places = task.places;
-// P[coinIdx][place] accumulates the fraction of (path, read) with the coin at that place.
 const probAcc = new Float64Array(live.length * places);
-// Size histograms: sizeAcc[place][bin] counts (path, read) samples.
 const edges = task.size.edges;
 const nBins = edges.length + 1; // 82
-const sizeAcc = new Float64Array(places * nBins);
 const rng = mulberry32(SEED);
-// Precompute step durations between consecutive read times (hours).
 const stepHours: number[] = [];
 for (let j = 0; j < nReads; j++) {
   stepHours.push(j === 0 ? readHours[0]! : readHours[j]! - readHours[j - 1]!);
@@ -167,50 +191,18 @@ for (let j = 0; j < nReads; j++) {
 const caps = new Float64Array(live.length);
 const order = new Int32Array(live.length);
 for (let p = 0; p < N_PATHS; p++) {
-  // Start each coin at its last-mark log10 cap.
   for (let i = 0; i < live.length; i++) caps[i] = live[i]!.lastCap;
   for (let j = 0; j < nReads; j++) {
     const dt = stepHours[j]!;
+    const sd = VOL_HOUR * Math.sqrt(Math.max(dt, 0));
     for (let i = 0; i < live.length; i++) {
-      const cap = caps[i]!;
-      const above = Math.max(0, cap - FLOOR_CAP);
-      const drift = -MEAN_REV * above;
-      const vol = VOL_FLOOR + VOL_SLOPE * above;
-      let next = cap + drift * dt + vol * Math.sqrt(Math.max(dt, 0)) * randn(rng);
-      // Crash hazard: a discrete jump down. Hot (high-cap, young) coins crash;
-      // the crash rate scales with how far above the floor the coin sits and
-      // fades with age (a coin that has held its cap for a while is a survivor).
-      const ageHours = Math.max(0, (lastAt - live[i]!.createdAt) / 3600000);
-      const ageFactor = 1 / (1 + ageHours / AGE_HALF_LIFE);
-      const crashP = CRASH_RATE_SLOPE * above * ageFactor * dt;
-      if (crashP > 0 && rng() < crashP) {
-        next -= CRASH_MIN + rng() * (CRASH_MAX - CRASH_MIN);
-      }
-      caps[i] = next;
+      const d = (live[i] as Coin & { drift: number }).drift;
+      caps[i] += d * dt + sd * randn(rng);
     }
-    // Rank by simulated cap, descending.
     for (let i = 0; i < live.length; i++) order[i] = i;
     order.sort((a, b) => caps[b]! - caps[a]!);
     for (let k = 0; k < places; k++) {
-      const idx = order[k]!;
-      probAcc[idx * places + k] += 1;
-      // Size bin of the cap at this place.
-      const v = caps[idx]!;
-      let bin = 0;
-      if (v < edges[0]!) bin = 0;
-      else if (v >= edges[edges.length - 1]!) bin = nBins - 1;
-      else {
-        // Binary search over edges.
-        let lo = 0;
-        let hi = edges.length - 1;
-        while (lo < hi) {
-          const mid = (lo + hi + 1) >> 1;
-          if (v >= edges[mid]!) lo = mid;
-          else hi = mid - 1;
-        }
-        bin = lo + 1;
-      }
-      sizeAcc[k * nBins + bin] += 1;
+      probAcc[order[k]! * places + k] += 1;
     }
   }
 }
@@ -226,7 +218,6 @@ for (let i = 0; i < live.length; i++) {
     if (p >= 0.0005) probabilities.push({ mint: live[i]!.mint, place: k + 1, p: Math.round(p * 1e6) / 1e6 });
   }
 }
-// Renormalise each place so the named sum is at most namedShare (rounding safety).
 for (let k = 0; k < places; k++) {
   let s = 0;
   for (const r of probabilities) if (r.place === k + 1) s += r.p;
@@ -235,16 +226,12 @@ for (let k = 0; k < places; k++) {
     for (const r of probabilities) if (r.place === k + 1) r.p = Math.round(r.p * f * 1e6) / 1e6;
   }
 }
-// Sizes: blend the simulation histogram with a newcomer component.
-// The simulation only has the decaying survivors, but the top-5 at a future
-// read is set by coins born after the cut, which arrive with big caps. The
-// newcomer component is a Normal per place, centred on the extrapolated
-// newcomer top cap (logarithmic growth with horizon) minus a gap for places
-// 2-5, with a wide sd at place 1 for the "explosion" (a newborn can arrive
-// far above the current top). The blend keeps the survivor shape and lifts
-// the centre toward where newcomers actually land.
+
+// ---- Sizes: direct Normal per place (decoupled from the order simulation) ----
+// Centre: the last-mark top cap grown logarithmically with horizon (the top
+// cap explodes as newcomers arrive), minus a small gap per place. The growth
+// is capped so the final's long horizon does not run away.
 const topCap = Math.max(...live.map((c) => c.lastCap));
-const newAcc = new Float64Array(places * nBins);
 // Normal CDF helper (Abramowitz-Stegun 7.1.26).
 const normCdf = (x: number): number => {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
@@ -253,39 +240,34 @@ const normCdf = (x: number): number => {
   if (x > 0) p = 1 - p;
   return p;
 };
-// Bin edges in log10: bin b covers [lo, hi).
 const binLo = (b: number): number => (b === 0 ? -Infinity : b === nBins - 1 ? edges[edges.length - 1]! : edges[b - 1]!);
 const binHi = (b: number): number => (b === 0 ? edges[0]! : b === nBins - 1 ? Infinity : edges[b]!);
-for (let j = 0; j < nReads; j++) {
-  const dt = readHours[j]!;
-  const center1 = topCap + NEW_GROWTH * Math.log(1 + dt);
-  for (let k = 0; k < places; k++) {
-    const center = k === 0 ? center1 : center1 - NEW_GAP - 0.05 * (k - 1);
-    const sd = k === 0 ? NEW_SD_TOP : NEW_SD_REST;
+const sizes: Array<{ place: number; bin: number; p: number }> = [];
+for (let k = 0; k < places; k++) {
+  // Average the Normal over the reads (each read has its own horizon).
+  const acc = new Float64Array(nBins);
+  for (let j = 0; j < nReads; j++) {
+    const dt = readHours[j]!;
+    const growth = Math.min(SIZE_GROWTH_CAP, SIZE_GROWTH_TOP * Math.log(1 + dt));
+    const center = topCap + growth - SIZE_GAP * k;
+    const sd = k === 0 ? SIZE_SD_TOP : SIZE_SD_REST;
     for (let b = 0; b < nBins; b++) {
       const lo = binLo(b);
       const hi = binHi(b);
       const pLo = lo === -Infinity ? 0 : normCdf((lo - center) / sd);
       const pHi = hi === Infinity ? 1 : normCdf((hi - center) / sd);
-      newAcc[k * nBins + b] += pHi - pLo;
+      acc[b] += pHi - pLo;
     }
   }
-}
-const sizes: Array<{ place: number; bin: number; p: number }> = [];
-for (let k = 0; k < places; k++) {
   for (let b = 0; b < nBins; b++) {
-    const simFrac = sizeAcc[k * nBins + b] / total;
-    const newFrac = newAcc[k * nBins + b] / nReads;
-    const p = (1 - NEW_SIZE_W) * simFrac + NEW_SIZE_W * newFrac;
+    const p = acc[b] / nReads;
     if (p >= 0.0005) sizes.push({ place: k + 1, bin: b, p: Math.round(p * 1e6) / 1e6 });
   }
 }
-// top5: coins with the lowest expected rank (mean place over paths/reads),
-// computed from probAcc as sum_k (k+1) * P(place k), plus a bonus for P(place 1).
+// top5: coins with the lowest expected rank.
 const expRank = live.map((c, i) => {
   let e = 0;
   for (let k = 0; k < places; k++) e += (k + 1) * (probAcc[i * places + k] / total);
-  // Coins never in the top 5 get a large rank.
   const inTop = Array.from({ length: places }, (_, k) => probAcc[i * places + k] / total).reduce((a, b) => a + b, 0);
   return { mint: c.mint, e: e + (1 - inTop) * 100 };
 });
