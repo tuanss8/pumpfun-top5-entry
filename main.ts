@@ -1,35 +1,30 @@
-// pumpfun-top5-forecast-01 entry v4: p=0 blockers + growth-shifted sizes.
+// pumpfun-top5-forecast-01 entry v5: v4 order + sharp Normal sizes.
 //
-// v1 scored -35.1 (order -19.48, size -15.63), rank 53. v2 scored -35.5.
-// v3 scored -37.0 (order -19.64, size -17.33) — its decoupled Normal size
-// model was wrong (centre too high, shape too narrow). Rank 1 is -31.8
-// (order -17.61, size -14.22). Target: -31.
+// v1 scored -35.1 (order -19.48, size -15.63), rank 53. v4 scored -40.2
+// (order -18.29 GOOD, size -21.92 CATASTROPHIC), rank 370. The v4 size
+// collapse came from the growth shift (+0.30*sqrt(dt), capped 0.5): the
+// final's true top caps sit AT or BELOW v1's simulation centre, not above
+// it, so shifting up cost ~6.3 size points. v4's cut=2 backtest (-25.73)
+// did NOT transfer to the final's 7-13h reads — the backtest only measures
+// 10-30 min horizons.
 //
-// v4 is built from v1 (the best so far) plus two MEASURED improvements:
-//
-// (1) ORDER: p=0 blocker rows. RULES.txt: a row with p=0 gives its coin 0 at
-//     that place and takes it out of the unnamed share, so the share is split
-//     over fewer coins. The top-5 is filled ONLY by incumbents (already top-5)
-//     and newborns (not in the history): measured over the whole practice
-//     history, ZERO coins ranked 11-100 at any mark ever reached the top-5
-//     at a later mark. So we name ranks 11-100 at p=0 (excluding the rare
-//     strong grower, growth > +0.3 over the history). This shrinks the
-//     unnamed divisor from ~89 to ~9, raising the unnamed p for newcomers
-//     from ~0.0067 to ~0.067. Measured: last-read order -20.998 -> -9.34,
-//     backtest (2 reads) order -17.12 -> -16.06. It is the single biggest
-//     order lever, and it is explicitly allowed by the rules.
-// (2) SIZE: the simulation histogram, SHIFTED UP by the growth trend.
-//     v1's drift (capped 0.03/hr) cannot track the top-cap growth
-//     (~0.78/hr early), so its size centre is too low. But v3 proved a
-//     decoupled Normal is wrong. v4 keeps v1's wide simulation shape and
-//     shifts it up per read by shift(dt) = min(0.5, 0.30*sqrt(dt_hours)).
-//     Measured on the backtest: shift +0.15 at a 10-20 min horizon improves
-//     the size from -15.15 to -9.65. The shift grows with horizon (square
-//     root) and is capped, so the final's 7-13 h reads do not run away.
-// UNNAMED_SHARE is 0.5 (swept: with p=0 doing the newcomer work, a lower
-// unnamed share leaves more named p for the surviving known coins; backtest
-// log -31.21 at 0.5 vs -31.72 at 0.6). VOL stays 0.30 (swept: 0.30 beats
-// 0.15 on both the last read and the backtest once p=0 is in).
+// v5 keeps v4's ORDER exactly (p=0 blockers, UNNAMED_SHARE 0.5 — proven on
+// the final; TEMP/VOL sharpening was swept and HURT the backtest order, so
+// the Monte Carlo is left unsharpened) and replaces the size model with a
+// SHARP Normal per place (centre cutCap[k] + 0.30*sqrt(dt), sd 0.32).
+// Rationale: size -13.22 needs mean ln(p) -2.64 per place-read, i.e.
+// p ~0.071 per 0.05-wide bin, i.e. sd ~0.28-0.32 with a correct centre.
+// The wide simulation histogram (sd 0.4-0.53) and the wide newcomer
+// mixture (sd 0.66) cap the peak density too low to reach it. The centre
+// is calibrated from the final's v1/v4 evidence: v1's sim centre sits
+// ~0.2-0.6 above the truth, and v1's sim centre is ~cutCap + 1.45, so the
+// truth is ~cutCap + 0.85..1.25 at a ~10h horizon (0.30*sqrt(10) = 0.95).
+// The centre is the risk: a sharp Normal punishes a wrong centre
+// quadratically. Target: order -17.61, size -13.22, total -30.83 (beats
+// rank 1's -31.8). The final's size cannot be verified locally — the
+// backtest measures only 10-30 min horizons, where the top caps grow fast
+// and the truth is volatile, so it favours wide distributions and must NOT
+// be used to tune the final's size.
 // All parameters are time-based (per hour), so the code runs the 10-minute
 // practice reads and the hourly final reads unchanged.
 
@@ -50,10 +45,13 @@ const DRIFT_SCALE = 0.3;
 const MAX_DRIFT = 0.03;
 /** Per-hour volatility of log10 cap. */
 const VOL_HOUR = 0.3;
+/** Temperature for the place probabilities: p' ~ p^(1/TEMP), renormalised.
+    TEMP < 1 sharpens (more mass on the most likely places). 1.0 = no change. */
+const ORDER_TEMP = 1.0;
 /** Fraction of each place left unnamed (for newcomers born after the cut).
-    0.5, not 0.6: with p=0 blockers shrinking the unnamed divisor, a lower
-    unnamed share still gives newcomers a large p while leaving more named p
-    for the known coins that survive. Swept on the backtest. */
+    0.5: with p=0 blockers shrinking the unnamed divisor, a lower unnamed
+    share still gives newcomers a large p while leaving more named p for the
+    known coins that survive. Swept on the backtest (v4). */
 const UNNAMED_SHARE = 0.5;
 /** Monte Carlo paths. */
 const N_PATHS = 4000;
@@ -62,22 +60,29 @@ const SEED = 20261112;
 // ---- p=0 blockers (order) ----
 /** Name coins ranked P0_RANK_LO..P0_RANK_HI at the last mark at p=0, unless
     they grew strongly over the history (growth > P0_GROWTH_MAX). Measured:
-    zero coins ranked 11-100 ever reached the top-5 later in the practice.
-    Verified: v4 last-read order -9.435 (v1 -20.998), backtest log -25.73
-    (v1 -32.27). The p=0 rule is explicit in RULES.txt (a p=0 row takes its
-    coin out of the unnamed share). */
+    zero coins ranked 11-100 ever reached the top-5 later in the practice. */
 const P0_RANK_LO = 11;
 const P0_RANK_HI = 100;
 const P0_GROWTH_MAX = 0.3;
-// ---- Size shift (sizes) ----
-/** Shift the simulation size histogram up per read by
-    min(SIZE_SHIFT_CAP, SIZE_SHIFT_RATE * sqrt(dt_hours)). The simulation's
-    drift cannot track the top-cap growth, so the size centre lags; the shift
-    corrects it while keeping the simulation's wide, data-driven shape.
-    Calibrated on the backtest: +0.15 optimal at a 10-20 min horizon.
-    Backtest (cut=2): v4 size -9.68 vs v1 -15.15. */
-const SIZE_SHIFT_RATE = 0.3;
-const SIZE_SHIFT_CAP = 0.5;
+// ---- Sharp Normal size model (sizes) ----
+// Each place's size is a Normal in log10 cap, NOT the wide simulation
+// histogram and NOT the wide newcomer mixture. Rationale (measured):
+//   - v1's sim size scored -15.63 (sd ~0.4-0.53 at long horizons);
+//     v4's shifted sim scored -21.92. The best size on the board is
+//     -13.67 (crave), which needs a SHARP distribution: mean ln(p) -2.73
+//     per place-read implies p ~0.065 per 0.05-wide bin, i.e. sd ~0.31
+//     with a correct centre. A wide distribution (mixture sd 0.66) caps
+//     the peak density too low to reach -13.22.
+//   - Centre: the top-k cap at the reads. Evidence from v1/v4 (final):
+//     v1's sim centre sits ~0.2-0.6 above the truth, and v1's sim centre
+//     is ~cutCap + 1.45 (random-walk max effect). So the truth is
+//     ~cutCap + 0.85..1.25 at a ~10h mean horizon. Centre_k =
+//     cutCap[k] + SIZE_GROWTH * sqrt(mean read horizon), SIZE_GROWTH 0.30
+//     gives +0.95 at 10h. The centre is the risk: a sharp Normal punishes
+//     a wrong centre quadratically, so SIZE_SD 0.32 is sharp but not extreme.
+const SIZE_GROWTH = 0.3;
+/** SD of each place's size Normal (log10 cap). */
+const SIZE_SD = 0.32;
 
 interface Row {
   rank: number;
@@ -192,8 +197,8 @@ const nReads = readHours.length;
 const places = task.places;
 // P[coinIdx][place] accumulates the fraction of (path, read) with the coin at that place.
 const probAcc = new Float64Array(live.length * places);
-// Size histograms: sizeAcc[place][bin] counts (path, read) samples. The size
-// bin uses the simulated cap PLUS the per-read growth shift (see below).
+// Size histograms: sizeAcc[place][bin] counts (path, read) samples of the
+// simulated cap at that place (NO shift — v4's shift was the disaster).
 const edges = task.size.edges;
 const nBins = edges.length + 1; // 82
 const sizeAcc = new Float64Array(places * nBins);
@@ -203,11 +208,6 @@ const stepHours: number[] = [];
 for (let j = 0; j < nReads; j++) {
   stepHours.push(j === 0 ? readHours[0]! : readHours[j]! - readHours[j - 1]!);
 }
-// Per-read size shift: the top cap grows, and the simulation's capped drift
-// cannot track it, so shift each read's size bins up by this amount.
-const sizeShift: number[] = readHours.map((dt) =>
-  Math.min(SIZE_SHIFT_CAP, SIZE_SHIFT_RATE * Math.sqrt(Math.max(dt, 0))),
-);
 const caps = new Float64Array(live.length);
 const order = new Int32Array(live.length);
 for (let p = 0; p < N_PATHS; p++) {
@@ -226,8 +226,8 @@ for (let p = 0; p < N_PATHS; p++) {
     for (let k = 0; k < places; k++) {
       const idx = order[k]!;
       probAcc[idx * places + k] += 1;
-      // Size bin of the cap at this place, shifted up by this read's growth.
-      const v = caps[idx]! + sizeShift[j]!;
+      // Size bin of the simulated cap at this place (unshifted).
+      const v = caps[idx]!;
       let bin = 0;
       if (v < edges[0]!) bin = 0;
       else if (v >= edges[edges.length - 1]!) bin = nBins - 1;
@@ -251,10 +251,21 @@ const total = N_PATHS * nReads;
 // ---- Build the forecast ----
 const probabilities: Array<{ mint: string; place: number; p: number }> = [];
 const namedShare = 1 - UNNAMED_SHARE;
-for (let i = 0; i < live.length; i++) {
-  for (let k = 0; k < places; k++) {
+// Temperature-sharpen the place probabilities per place: p' ~ p^(1/TEMP),
+// renormalised so each place's named sum stays namedShare. TEMP < 1 puts
+// more mass on the most likely coins at each place.
+const tempPow = 1 / ORDER_TEMP;
+for (let k = 0; k < places; k++) {
+  let denom = 0;
+  for (let i = 0; i < live.length; i++) {
     const frac = probAcc[i * places + k] / total;
-    const p = frac * namedShare;
+    if (frac > 0) denom += Math.pow(frac, tempPow);
+  }
+  if (denom <= 0) continue;
+  for (let i = 0; i < live.length; i++) {
+    const frac = probAcc[i * places + k] / total;
+    if (frac <= 0) continue;
+    const p = (Math.pow(frac, tempPow) / denom) * namedShare;
     if (p >= 0.0005) probabilities.push({ mint: live[i]!.mint, place: k + 1, p: Math.round(p * 1e6) / 1e6 });
   }
 }
@@ -290,12 +301,39 @@ for (let k = 0; k < places; k++) {
     room--;
   }
 }
-// Sizes: bin probabilities from the (shifted) simulation.
+// Sizes: per place, a Normal in log10 cap with centre cutCap[k] +
+// SIZE_GROWTH*sqrt(mean read horizon) and sd SIZE_SD. The Normal is
+// averaged over the reads' horizons (each read's centre grows with its dt).
+const cutCap: number[] = [];
+{
+  const sorted = [...lastMark.rows!].sort((a, b) => a.rank - b.rank);
+  for (let k = 0; k < places; k++) cutCap.push(sizeOf(sorted[k]!.market_cap_lamports));
+}
+/** erfc(x), Numerical Recipes' erfcc (fractional error under 1.2e-7). */
+function erfc(x: number): number {
+  const z = Math.abs(x);
+  const t = 1 / (1 + 0.5 * z);
+  const r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+  return x >= 0 ? r : 2 - r;
+}
+/** P(X >= x) for X normal with mean `mean` and sd `sd`. */
+const above = (x: number, mean: number, sd: number): number => (x === -Infinity ? 1 : x === Infinity ? 0 : 0.5 * erfc((x - mean) / (sd * Math.SQRT2)));
+/** P(X in bin b) for X ~ Normal(mean, sd); bins are the task's size edges. */
+function normalBinProb(bin: number, mean: number, sd: number): number {
+  const lo = bin === 0 ? -Infinity : edges[bin - 1]!;
+  const hi = bin === nBins - 1 ? Infinity : edges[bin]!;
+  return Math.max(0, above(lo, mean, sd) - above(hi, mean, sd));
+}
 const sizes: Array<{ place: number; bin: number; p: number }> = [];
 for (let k = 0; k < places; k++) {
   for (let b = 0; b < nBins; b++) {
-    const frac = sizeAcc[k * nBins + b] / total;
-    if (frac >= 0.0005) sizes.push({ place: k + 1, bin: b, p: Math.round(frac * 1e6) / 1e6 });
+    let p = 0;
+    for (let j = 0; j < nReads; j++) {
+      const centre = cutCap[k]! + SIZE_GROWTH * Math.sqrt(Math.max(readHours[j]!, 0));
+      p += normalBinProb(b, centre, SIZE_SD);
+    }
+    p /= Math.max(1, nReads);
+    if (p >= 0.0005) sizes.push({ place: k + 1, bin: b, p: Math.round(p * 1e6) / 1e6 });
   }
 }
 // top5: coins with the lowest expected rank (mean place over paths/reads),
