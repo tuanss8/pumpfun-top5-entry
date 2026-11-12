@@ -1,38 +1,72 @@
-// pumpfun-top5-forecast-01 entry v7: v6 + top-scale-anchored size centre
-// + horizon-dependent size sd.
+// pumpfun-top5-forecast-01 entry v8: v7 + per-place unnamed shares +
+// a higher naming threshold (PMIN 0.01) + a hard 100-rows/place cap.
 //
-// v6 (submitted 14:23 WIB, ID 01a1cea1, all checks PASS) closed the ORDER
-// gap (+0.67 backtest, crash hazard) but left the size model unchanged
-// (expected -13.22 good case). v7 fixes the SIZE centre, the remaining
-// lever. Measured (practice regression, R2=0.97): the true top-5 caps
-// revert FULLY to the top scale (gap coefficient 1.11) — the top-5 caps
-// at any read are a TIGHT band around the top scale, while v6's centre
-// (cutCap[k] + growth) inherits the cut's spread and is badly wrong at
-// the lower places when the cut is spread (cut2: v6 size -20.64).
+// v7 (submitted, round 7) fixed the SIZE centre (top-scale anchored,
+// practice size -12.99, expected final ~-13.2). v8 fixes the ORDER, the
+// remaining gap (v7 backtest order -19.85; rank 1's final order -18.18,
+// rank 2's -17.61). Measured on the practice backtest with the OFFICIAL
+// ranked.ts scorer (corrected unnamed divisor):
+//   v8: order cut2 -23.06, cut3 -15.91 (mean -19.49); size cut2 -12.88,
+//   cut3 -13.09 (mean -12.99, = v7 — size untouched); log mean -32.47.
+//   v7: order mean -19.85; size mean -12.99; log mean -32.84.
+//   => v8 improves the backtest log by +0.36, ALL from order (+0.36).
+//   Multi-seed (1/7/20261112): order -19.49 to -19.57 — the gain is
+//   robust, not MC noise (seed spread +/-0.04).
 //
-// v7 centre[k] = 0.2*cutCap[k] + 0.8*cutCap[0] + 0.30*sqrt(dt)
-// (75% anchored to the top scale = place-1 cap at the cut). And the size
-// sd grows with horizon: sd(dt) = sqrt(0.22^2 + (0.065*sqrt(dt))^2) —
-// ~0.22 on the backtest (centre accurate) widening to ~0.30 at the final
-// (centre error from top-scale growth uncertainty ~0.065).
+// (1) PER-PLACE UNNAMED SHARES. The unnamed share was a uniform 0.5, but
+// newcomers do not occupy the places uniformly: measured over all 10
+// ordered mark pairs in the practice history, the newcomer share of the
+// top-5 occupant is place 1: 0.80, place 2: 0.70, place 3: 0.50,
+// place 4: 0.70, place 5: 0.50 (and the cut's #1 coin NEVER holds place 1
+// at lag >= 2 marks). v8 sets UNNAMED_SHARE_K = [0.7, 0.6, 0.5, 0.6, 0.5]
+// — the measured shares shrunk toward uniform 0.5, the conservative
+// choice: the unshrunk [0.8, 0.7, 0.5, 0.7, 0.5] scores identically on
+// the backtest mean (-19.50 vs -19.49), and the shrunk vector is less
+// exposed if the final's newcomer shares differ from the practice's.
+// A uniform u is flat-to-worse (0.6: -19.87, 0.7: -20.11, 0.8: -20.67).
+// The gain is +0.28 on the backtest; the final reads are 7-13h out
+// (more newcomer-dominated than the 10-30 min backtest), so the
+// transferable gain is plausibly +0.3 or more, not less.
 //
-// Measured on the practice backtest with the OFFICIAL ranked.ts scorer:
-//   v7: order cut2 -23.92, cut3 -15.79 (mean -19.85, = v6 — order
-//   unchanged); size cut2 -12.88, cut3 -13.09 (mean -12.99);
-//   log mean -32.84.
-//   v6: order mean -19.85; size mean -17.36; log mean -37.21.
-//   => v7 improves the backtest log by +4.37, ALL from size (+4.37:
-//   -17.36 -> -12.99). Both cuts agree (cut2 -12.88, cut3 -13.09).
-//   Deterministic; multi-seed order spread +/-0.04; TEMP flat (1.0 kept).
-// Transfer: the centre structure (tight top-5, mean reversion) is
-// structural and should transfer; the size gain on the final is likely
-// ~+1.0 (the tight-cut gain) rather than the full +4.37 (which includes
-// the spread-cut gain). Expected final: order ~-17.6 to -18.0 (as v6),
-// size ~-12.2 good / ~-13.5 realistic => total ~-29.8 good, ~-31.3
-// realistic — beats rank 1 (-31.7) in the good-to-realistic case.
-// The size transfer risk (v4 lesson) remains: backtest size does not
-// predict final size, but the centre is now calibrated to the true
-// structure instead of the cut's spread, which is the sounder basis.
+// (2) NAMING THRESHOLD PMIN 0.01 (was 0.0005). A coin named at p below
+// the unnamed per-coin probability (~0.007) scores WORSE named than
+// unnamed — it should be left in the unnamed pool. Raising the threshold
+// to 0.01 gains +0.09 on the backtest and, crucially, holds the row count
+// under the 100-rows/place limit at long horizons (see (3)).
+//
+// (3) HARD 100-ROWS/PLACE CAP. RULES.txt: a place has at most 100 rows;
+// over that, the forecast is no forecast and scores the floor everywhere.
+// The MC loop had NO cap: on the practice market at 7-13h horizons it
+// emits 106-200 rows/place (diffusion pushes many coins over 0.0005).
+// v4 still scored -40.2 on the final, so the mature final market kept
+// v4 under 100 — but that is luck, not a guarantee. v8 caps each place
+// at 100 rows, keeping every p=0 blocker (they cost nothing and shrink
+// the unnamed divisor) and the highest-p named rows. With PMIN 0.01 the
+// cap is normally a no-op (long-horizon test: 96-99 rows/place).
+//
+// NOT CHANGED (and why): the crash hazard is left EXACTLY as v6/v7.
+// Measured finding (long-horizon test, practice market): with hourly
+// reads the Bernoulli crash check `rng() < 1.0 * dt` is ALWAYS true, so
+// every coin crashes by the same -0.52 every step — a uniform shift,
+// ranking-neutral. v7 CH=1.0 and CH=0 give statistically identical
+// 7-13h forecasts (place-1 top p 0.082 vs 0.072, effN 10.4 vs 10.9).
+// The v6 crash hazard is a NO-OP for order in the final; its +0.67
+// backtest gain does NOT transfer (v6's expected final order is ~-18.29,
+// v5's level, not -17.6). The honest fix is Poisson crashes (a count of
+// crashes per step, rate 1.0/hr), but it is NOT shipped here: the
+// backtest is consistently slightly WORSE with it (-0.07 to -0.13 across
+// PMIN values) and its long-horizon effect (effN 34-105 vs 10-31) is
+// unmeasurable from the 1h practice — over-diffusion risk. It is a v9
+// research item, not a v8 change. TEMP (1.0), VOL (0.30), CH (1.0),
+// DRIFT_HOURS (0.83), crash front-loading (hurts), PMIN 0.0001 (hurts),
+// P0 range to 11-200 (no change — only 1 chart coin) were all swept;
+// none beats the v8 combination. Size model untouched (v7's).
+//
+// Expected final: order ~-17.8 to -18.0 (v5/v4 level -18.29 plus the
+// transferred per-place gain), size ~-13.2 good / ~-13.5 realistic =>
+// total ~-31.0 good, ~-31.5 realistic — beats rank 1 (-31.7) in the
+// good-to-realistic case. Transfer risk (the v4 lesson) remains: the
+// backtest measures 10-30 min horizons, the final reads are 7-13h.
 // All parameters are time-based (per hour), so the code runs the
 // 10-minute practice reads and the hourly final reads unchanged.
 
@@ -53,14 +87,23 @@ const DRIFT_SCALE = 0.3;
 const MAX_DRIFT = 0.03;
 /** Per-hour volatility of log10 cap. */
 const VOL_HOUR = 0.3;
+/** Minimum named probability: only name a coin at a place when its
+    temperature-adjusted p is at least this. Below it the coin scores
+    better unnamed (the unnamed per-coin p is ~0.007) — and naming it
+    spends one of the place's 100 rows. Swept on the backtest: 0.0005
+    -19.85, 0.001 -19.86, 0.002 -19.85, 0.005 -19.78, 0.01 -19.76. */
+const P_MIN = 0.01;
 /** Temperature for the place probabilities: p' ~ p^(1/TEMP), renormalised.
     TEMP < 1 sharpens (more mass on the most likely places). 1.0 = no change. */
 const ORDER_TEMP = 1.0;
-/** Fraction of each place left unnamed (for newcomers born after the cut).
-    0.5: with p=0 blockers shrinking the unnamed divisor, a lower unnamed
-    share still gives newcomers a large p while leaving more named p for the
-    known coins that survive. Swept on the backtest (v4). */
-const UNNAMED_SHARE = 0.5;
+/** Fraction of each place left unnamed (for newcomers born after the cut),
+    per place. Measured over all 10 ordered mark pairs in the practice
+    history, the newcomer share of the top-5 occupant is place 1: 0.80,
+    place 2: 0.70, place 3: 0.50, place 4: 0.70, place 5: 0.50. v8 uses
+    those shares shrunk toward uniform 0.5 (the unshrunk vector scores
+    identically on the backtest mean). Swept: uniform 0.6/0.7/0.8 all worse;
+    per-place gains +0.28 on the backtest, size unchanged. */
+const UNNAMED_SHARE_K = [0.7, 0.6, 0.5, 0.6, 0.5];
 /** Monte Carlo paths. */
 const N_PATHS = 4000;
 /** Deterministic seed. */
@@ -289,7 +332,7 @@ const total = N_PATHS * nReads;
 
 // ---- Build the forecast ----
 const probabilities: Array<{ mint: string; place: number; p: number }> = [];
-const namedShare = 1 - UNNAMED_SHARE;
+const namedShareK = UNNAMED_SHARE_K.map((u) => 1 - u);
 // Temperature-sharpen the place probabilities per place: p' ~ p^(1/TEMP),
 // renormalised so each place's named sum stays namedShare. TEMP < 1 puts
 // more mass on the most likely coins at each place.
@@ -304,16 +347,16 @@ for (let k = 0; k < places; k++) {
   for (let i = 0; i < live.length; i++) {
     const frac = probAcc[i * places + k] / total;
     if (frac <= 0) continue;
-    const p = (Math.pow(frac, tempPow) / denom) * namedShare;
-    if (p >= 0.0005) probabilities.push({ mint: live[i]!.mint, place: k + 1, p: Math.round(p * 1e6) / 1e6 });
+    const p = (Math.pow(frac, tempPow) / denom) * namedShareK[k]!;
+    if (p >= P_MIN) probabilities.push({ mint: live[i]!.mint, place: k + 1, p: Math.round(p * 1e6) / 1e6 });
   }
 }
 // Renormalise each place so the named sum is at most namedShare (rounding safety).
 for (let k = 0; k < places; k++) {
   let s = 0;
   for (const r of probabilities) if (r.place === k + 1) s += r.p;
-  if (s > namedShare) {
-    const f = namedShare / s;
+  if (s > namedShareK[k]!) {
+    const f = namedShareK[k]! / s;
     for (const r of probabilities) if (r.place === k + 1) r.p = Math.round(r.p * f * 1e6) / 1e6;
   }
 }
@@ -338,6 +381,25 @@ for (let k = 0; k < places; k++) {
     probabilities.push({ mint: r.mint, place, p: 0 });
     existing.add(r.mint);
     room--;
+  }
+}
+// Hard cap: a place has at most 100 rows (RULES.txt); over that the
+// forecast is invalid and scores the floor everywhere. The MC loop has no
+// cap of its own, and at 7-13h horizons diffusion pushes 106-200 coins
+// over the naming threshold per place on the practice market. Keep every
+// p=0 blocker (they cost nothing and shrink the unnamed divisor) and the
+// highest-p named rows to fill to 100. With P_MIN 0.01 this is normally
+// a no-op (long-horizon test: 96-99 rows/place).
+for (let k = 0; k < places; k++) {
+  const place = k + 1;
+  const rows = probabilities.filter((r) => r.place === place);
+  if (rows.length > 100) {
+    const blockers = rows.filter((r) => r.p === 0);
+    const named = rows.filter((r) => r.p > 0).sort((a, b) => b.p - a.p);
+    const keep = new Set([...blockers, ...named.slice(0, Math.max(0, 100 - blockers.length))]);
+    for (let i = probabilities.length - 1; i >= 0; i--) {
+      if (probabilities[i]!.place === place && !keep.has(probabilities[i]!)) probabilities.splice(i, 1);
+    }
   }
 }
 // Sizes: per place, a Normal in log10 cap with centre cutCap[k] +
