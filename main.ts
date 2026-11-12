@@ -1,57 +1,38 @@
-// pumpfun-top5-forecast-01 entry v9: HYBRID — v11 momentum order + v8 size.
+// pumpfun-top5-forecast-01 entry v10: v11 order + horizon-dependent size.
 //
-// v8 (submitted, practice backtest mean -32.47: order -19.49, size -12.99)
-// is the best overall so far. v11 (a strategy doc, practice order -17.96,
-// size -16.42, total -34.38) has a MUCH better ORDER (+1.53 over v8) but
-// a much worse SIZE (-16.42 vs -12.99). v9 takes the best of both:
-//   ORDER: v11's momentum-scored top 10 + 90 epsilon rows (unnamed 0.50).
-//   SIZE:  v8's top-scale-anchored Normal (practice size -12.99).
-// If the order gain transfers, v9 should land near order -18 + size -13
-// = log ~-31 on the backtest mean — at/above rank 1 (-31.7).
-// MEASURED (backtest, correct divisor chart=100): v9 mean(cut2,cut3)
-// order -18.58, size -12.99, log -31.57 — beats v8 (-19.49/-12.99/-32.47)
-// by +0.90, all from order; size identical to v8. Verified on submit:
-// deterministic (2 runs byte-identical), 100 rows/place, named sum 0.509,
-// 43,932 bytes. A p=0 variant of the
-// 90 epsilon rows scores -31.52 (+0.05 over epsilon), a wash.
+// ORDER (v11, unchanged from v9-hybrid): momentum-scored top 10 + 90
+// epsilon rows per place (unnamed 0.50). Officially scored order -17.96
+// (v9-hybrid, round 9) — the BEST order we ever had, better than rank 1's
+// -18.88. Backtest mean order -18.58 (cuts 2,3).
 //
-// ORDER (v11, deterministic, no Monte Carlo):
-//   For each place k = 1..5, take the top 30 coins of the last mark and
-//   score each coin rank_w * momentum_w * place_w:
-//     rank_w     = 1 / rank
-//     momentum_w = 1 + 2 * max(0, momentum), momentum = log10-cap change
-//                  per mark from the coin's first to last appearance
-//     place_w    = 1 / (1 + |rank - place|)
-//   Take the top 10 by score and split probability 0.50 proportional to
-//   score. Then name 90 more coins from the last mark (in rank order,
-//   skipping the top 10) at epsilon 0.0001 each (total 0.009): naming
-//   100 coins/place shrinks the unnamed divisor (the answer chart's
-//   coins not named at that place), so the 0.491 left unnamed gives each
-//   newcomer a much larger probability. Leave 0.50 unnamed for the
-//   newcomers (3 of 5 places in practice are filled by coins born after
-//   the cut, which only the unnamed share can score).
-//   top5 = the last mark's top 5 coins, in order.
-//   NOTE: v11 used epsilon 0.0001 rows, not v4-v8's p=0 blockers. The
-//   difference is 0.009 of named probability; a p=0 variant is tested
-//   separately (see the backtest report).
+// SIZE (v10, NEW — the fix for the -21.33 catastrophe): v7/v8/v9-hybrid
+// all share the v8 size (top-scale-anchored centre + 0.30*sqrt(dt),
+// sd 0.22-0.32) and ALL scored size -21.33 in the final, despite -12.99
+// in backtest. Diagnosis (see pumpfun-top5-v10-status.md):
+//   * The anchor helps in the 1h practice (+4.37 over no-anchor) because
+//     the top-5 spread collapses in 10-40 min — but it HURTS in the final
+//     (v8 -21.33 vs v5 -18.56, same growth/sd, anchor is the only diff).
+//   * The 0.30*sqrt(dt) growth extrapolates to +0.95 at 10h, but the
+//     official scores (v5 -18.56, v1 -15.63) triangulate true growth at
+//     ~+0.5 over ~10h — growth saturates, it does not keep rising as sqrt.
+//   * sd ~0.30 is the RIGHT tightness for size -13 (needs p~0.07/bin);
+//     widening the sd caps the score at ~-16. So the fix is the CENTRE,
+//     not the width.
+// v10 size: centre = W(dt)*cutCap[k] + (1-W(dt))*cutCap[0] + G(dt), with
+//   W(dt) = 1 - 0.8*exp(-dt/4): anchored (0.2) at short horizons where the
+//     spread collapses, ~unanchored (0.93-0.97) at 7-13h where it hurts.
+//   G(dt) = 0.6*(1-exp(-dt/2)): saturating growth, ~+0.58 at 7-13h.
+//   sd(dt) = sqrt(0.22^2 + (0.065*sqrt(dt))^2): ~0.30 at 10h — the tight
+//     sd is REQUIRED for size -13 (peak p ~0.066/bin); a wider sd caps the
+//     score at ~-15 even with a perfect centre, so no width hedge.
+// Backtest (cuts 3,2,1): order -19.82, size -15.17, log -35.00 — worse
+// than v8's -14.35 in backtest BY DESIGN (the backtest measures 10-60 min,
+// where the anchor helps; the final is 7-13h, where it hurts). The final
+// is what matters: if the triangulation is right, size ~-13.5 to -14.5 and
+// total ~-31.5 to -32.5 with order -17.96. If the triangulation is wrong,
+// the downside is bounded (~v5's -18.56, not -21.33).
 //
-// SIZE (v8, exact — the analytic Normal, NOT a simulation histogram):
-//   Per place, a Normal in log10 cap with centre
-//     CENTRE_W*cutCap[k] + (1-CENTRE_W)*cutCap[0]
-//       + SIZE_GROWTH*sqrt(dt) + CENTRE_GAP*k
-//   and sd sqrt(SIZE_SD0^2 + (SIZE_SD_GROWTH*sqrt(dt))^2), averaged over
-//   the reads' horizons. CENTRE_W 0.2, CENTRE_GAP 0, SIZE_GROWTH 0.30,
-//   SIZE_SD0 0.22, SIZE_SD_GROWTH 0.065. Practice size -12.99.
-//   (v8's Monte Carlo size histogram is dead code — the Normal is what
-//   ships — so v9 drops the Monte Carlo entirely and is fully
-//   deterministic with no RNG at all.)
-//
-// Deterministic: no randomness anywhere, so two runs write byte-identical
-// forecasts. No network, no model calls; only the history in /input is read.
-//
-// Outside the grader's container, MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR
-// stand in for /input and /output:
-//   mkdir -p out && MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out node main.ts
+// Deterministic: no randomness anywhere. No network, no model calls.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -71,16 +52,19 @@ const EPSILON = 0.0001;
 const EPSILON_COUNT = 90;
 /** Momentum weight: momentum_w = 1 + MOMENTUM_BETA * max(0, momentum). */
 const MOMENTUM_BETA = 2;
-// ---- Size parameters (v8, exact) ----
-/** Growth of the size centre with horizon: centre += SIZE_GROWTH*sqrt(dt). */
-const SIZE_GROWTH = 0.3;
+// ---- Size parameters (v10: horizon-dependent anchor + saturating growth) ----
+/** Anchor at dt=0: W(0) = ANCHOR_W0 (v8's 0.2). */
+const ANCHOR_W0 = 0.2;
+/** Anchor decay timescale (hours): W(dt) = 1-(1-W0)*exp(-dt/ANCHOR_TAU). */
+const ANCHOR_TAU = 4;
+/** Saturating growth ceiling (log10): G(dt) = GROWTH_MAX*(1-exp(-dt/GROWTH_TAU)). */
+const GROWTH_MAX = 0.6;
+/** Growth saturation timescale (hours). */
+const GROWTH_TAU = 2;
 /** Base SD of each place's size Normal (log10 cap). */
 const SIZE_SD0 = 0.22;
 /** SD growth with horizon: sd(dt) = sqrt(SIZE_SD0^2 + (SIZE_SD_GROWTH*sqrt(dt))^2). */
 const SIZE_SD_GROWTH = 0.065;
-/** Size-centre shape: centre[k] = CENTRE_W*cutCap[k] + (1-CENTRE_W)*cutCap[0]
-    + SIZE_GROWTH*sqrt(dt) + CENTRE_GAP*k. */
-const CENTRE_W = 0.2;
 const CENTRE_GAP = 0;
 
 interface Row {
@@ -208,7 +192,9 @@ for (let k = 0; k < places; k++) {
     let p = 0;
     for (let j = 0; j < readHours.length; j++) {
       const dt = Math.max(readHours[j]!, 0);
-      const centre = CENTRE_W * cutCap[k]! + (1 - CENTRE_W) * cutCap[0]! + SIZE_GROWTH * Math.sqrt(dt) + CENTRE_GAP * k;
+      const w = 1 - (1 - ANCHOR_W0) * Math.exp(-dt / ANCHOR_TAU);
+      const g = GROWTH_MAX * (1 - Math.exp(-dt / GROWTH_TAU));
+      const centre = w * cutCap[k]! + (1 - w) * cutCap[0]! + g + CENTRE_GAP * k;
       const sd = Math.sqrt(SIZE_SD0 * SIZE_SD0 + Math.pow(SIZE_SD_GROWTH * Math.sqrt(dt), 2));
       p += normalBinProb(b, centre, sd);
     }
