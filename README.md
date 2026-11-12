@@ -1,55 +1,50 @@
-# Pump.fun top-5 forecaster v3
+# Pump.fun top-5 forecaster v4
 
-Monte Carlo log10-cap forecaster for `pumpfun-top5-forecast-01`
-("Predict the top 5 new Solana coins by market cap, 24 hours out").
+Monte Carlo log10-cap forecaster with two measured improvements over v1:
 
-## Model
+## 1. p=0 blocker rows (order)
 
-- **Order**: each live coin's log10 market cap is a random walk with a drift
-  estimated from its recent OLS slope (shrunk, scaled 0.3, capped ±0.03/hour)
-  and a per-hour volatility. We simulate every coin forward to each of the
-  seven answer reads, rank the simulated caps, and average P(coin at place k).
-  60% of each place is left unnamed for coins born after the history cut
-  (in the practice, 3 of the 5 coins at the last read were not in the history).
-- **Volatility (the v3 order fix)**: a vol sweep on the last-read order score
-  shows the optimum near 0.10–0.15/hour (v1's 0.30 → −23.26, 0.20 → −23.14,
-  0.15 → −23.09, 0.10 → −23.07, 0.07 → −23.14, 0.05 → −23.30). v3 uses
-  0.15/hour — nearly the best on the measured read, but far less concentrated
-  on the current #1 (p=0.32 vs 0.37 at 0.10), which the extreme top-5 churn
-  contradicts.
-- **Sizes (the v3 size fix, decoupled from the order simulation)**: the top
-  cap EXPLODES — measured top log10 cap 3.04 → 3.56 in 40 minutes
-  (+0.79/hour). v1's place-1 size mean (3.71) sits far below where the top
-  cap actually lands. So each place's size is a Normal centred on the
-  extrapolated top cap (logarithmic growth with horizon, capped at +0.8)
-  minus a small gap per place (0.12), with sd 0.18 at place 1 and 0.14
-  elsewhere.
+RULES.txt: a row with p=0 gives its coin 0 at that place and takes it out of
+the unnamed share, so the share is split over fewer coins. The top-5 is
+filled ONLY by incumbents (already top-5) and newborns (not in the history):
+measured over the whole practice history, ZERO coins ranked 11-100 at any
+mark ever reached the top-5 at a later mark. So v4 names ranks 11-100 at
+p=0 (excluding the rare strong grower, growth > +0.3 over the history).
+This shrinks the unnamed divisor from ~89 to ~9, raising the unnamed p for
+newcomers from ~0.0067 to ~0.067.
 
-## Why v2 was reverted
+Measured: last-read order -20.998 (v1) -> -9.435 (v4); backtest (2 reads)
+order -17.12 (v1) -> -16.06 (v4).
 
-v2 (survival-aware crash hazard + cap-dependent vol + 50/50 newcomer size
-blend) scored −35.5 (order −19.77, size −15.75), rank 78 — WORSE than v1's
-−35.1 (order −19.48, size −15.63), rank 53. The crash hazard hurt the order
-(−0.29) and the newcomer blend hurt the size (−0.12): its centre was too low
-(3.63) and its sd too wide (0.30). v3 reverts to v1's order model and fixes
-the size centre directly instead of blending.
+## 2. Growth-shifted sizes (size)
 
-## Scores (practice, server-graded)
+v1's drift (capped 0.03/hr) cannot track the top-cap growth (~0.78/hr
+early), so its size centre is too low. v3 proved a decoupled Normal is
+wrong. v4 keeps v1's wide simulation shape and shifts it up per read by
+`min(0.5, 0.30*sqrt(dt_hours))`. Calibrated on the backtest: shift +0.15
+optimal at a 10-20 min horizon (size -15.15 -> -9.65).
 
-| version | log | order | size | rank |
-|---|---:|---:|---:|---:|
-| v1 | −35.1 | −19.48 | −15.63 | 53/358 |
-| v2 | −35.5 | −19.77 | −15.75 | 78/380 |
-| v3 | — | −23.09 last-read order (v1 −23.26, v2 −23.40 on the same scorer) | — | — |
+Measured on the backtest (history to 20:30, answers 20:40+20:50):
+v4 order -16.06, size -9.68, log -25.73 (v1: -17.12, -15.15, -32.27).
 
-Rank 1 is −32.1 (order −18.17, size −13.89); rank 10 is −33.7.
-Baseline (house persistence) is −40.41.
+## Parameters
 
-## Run
+- DRIFT_SCALE 0.3, MAX_DRIFT 0.03, VOL_HOUR 0.30 (swept; 0.30 beats 0.15
+  once p=0 is in, on both the last read and the backtest).
+- UNNAMED_SHARE 0.5 (swept; with p=0 doing the newcomer work, a lower
+  unnamed share leaves more named p for surviving known coins).
+- SIZE_SHIFT_RATE 0.30, SIZE_SHIFT_CAP 0.5.
+- P0_RANK_LO 11, P0_RANK_HI 100, P0_GROWTH_MAX 0.3.
 
-```sh
-MAKEFUN_INPUT_DIR=<kit>/input MAKEFUN_OUTPUT_DIR=out node main.ts
-```
+## Scores (official)
 
-Deterministic (seeded PRNG, two runs are byte-identical). Node 22 stdlib
-only, no network, no model calls.
+- v1: -35.1 (order -19.48, size -15.63), rank 53.
+- v2: -35.5 (order -19.77, size -15.75), rank 78.
+- v3: -37.0 (order -19.64, size -17.33), rank 167.
+- Rank 1: -31.8 (order -17.61, size -14.22).
+
+## Practice check
+
+Run with the kit's practice input; the forecast is deterministic (two runs
+byte-identical) and valid (3 keys, top5 5 distinct, per-place named sums
+0.5, sizes sum ~1.0).
