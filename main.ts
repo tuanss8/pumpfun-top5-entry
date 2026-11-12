@@ -1,74 +1,55 @@
-// pumpfun-top5-forecast-01 entry v8: v7 + per-place unnamed shares +
-// a higher naming threshold (PMIN 0.01) + a hard 100-rows/place cap.
+// pumpfun-top5-forecast-01 entry v9: v8 + higher unnamed shares for the
+// FINAL's 7-13h reads (the newcomer share rises with lag).
 //
-// v7 (submitted, round 7) fixed the SIZE centre (top-scale anchored,
-// practice size -12.99, expected final ~-13.2). v8 fixes the ORDER, the
-// remaining gap (v7 backtest order -19.85; rank 1's final order -18.18,
-// rank 2's -17.61). Measured on the practice backtest with the OFFICIAL
-// ranked.ts scorer (corrected unnamed divisor):
-//   v8: order cut2 -23.06, cut3 -15.91 (mean -19.49); size cut2 -12.88,
-//   cut3 -13.09 (mean -12.99, = v7 — size untouched); log mean -32.47.
-//   v7: order mean -19.85; size mean -12.99; log mean -32.84.
-//   => v8 improves the backtest log by +0.36, ALL from order (+0.36).
-//   Multi-seed (1/7/20261112): order -19.49 to -19.57 — the gain is
-//   robust, not MC noise (seed spread +/-0.04).
+// v8 (submitted, round 8) fixed the ORDER at short horizons: per-place
+// unnamed shares [0.7,0.6,0.5,0.6,0.5] measured on the 10-40 min practice
+// lags, P_MIN 0.01, 100-row cap. Practice (official ranked.ts scorer,
+// corrected divisor): order cut2 -23.06 / cut3 -15.91 (mean -19.49),
+// size -12.99, log -32.47. Expected final ~-31.0 good / ~-31.5 realistic.
 //
-// (1) PER-PLACE UNNAMED SHARES. The unnamed share was a uniform 0.5, but
-// newcomers do not occupy the places uniformly: measured over all 10
-// ordered mark pairs in the practice history, the newcomer share of the
-// top-5 occupant is place 1: 0.80, place 2: 0.70, place 3: 0.50,
-// place 4: 0.70, place 5: 0.50 (and the cut's #1 coin NEVER holds place 1
-// at lag >= 2 marks). v8 sets UNNAMED_SHARE_K = [0.7, 0.6, 0.5, 0.6, 0.5]
-// — the measured shares shrunk toward uniform 0.5, the conservative
-// choice: the unshrunk [0.8, 0.7, 0.5, 0.7, 0.5] scores identically on
-// the backtest mean (-19.50 vs -19.49), and the shrunk vector is less
-// exposed if the final's newcomer shares differ from the practice's.
-// A uniform u is flat-to-worse (0.6: -19.87, 0.7: -20.11, 0.8: -20.67).
-// The gain is +0.28 on the backtest; the final reads are 7-13h out
-// (more newcomer-dominated than the 10-30 min backtest), so the
-// transferable gain is plausibly +0.3 or more, not less.
+// v9 changes ONE thing: UNNAMED_SHARE_K = [0.8, 0.7, 0.6, 0.7, 0.6]
+// (+0.1 per place). Why: the newcomer share of the top-5 occupant RISES
+// with lag — measured 0.40-0.50 at 10 min -> 0.80 at 30-40 min (all 10
+// ordered mark pairs; same trend excluding the partial first mark) — and
+// the per-cut backtest confirms it: a uniform +0.1 shift HURTS cut3
+// (short lags, -0.69) but HELPS cut2 (+0.46) and cut1 (longest lags,
+// +0.33), identically across 3 seeds (deltas within +/-0.01 — not MC
+// noise). The final's reads are 7-13h out, far beyond the practice's
+// 40 min, so the optimal unnamed share there is HIGHER than v8's
+// short-lag values. +0.1 is the conservative step: it is the share the
+// data ALREADY shows at 30-40 min (0.8 avg), not an extrapolation past
+// it. KL analysis: if the final's true share is ~0.8, +0.1 gains ~+0.35
+// order over v8; if it somehow stays at v8's level, +0.1 costs only
+// ~-0.11 (vs -0.54 for a +0.2 shift — rejected as too aggressive).
+// Practice backtest mean is flat by design (it measures 10-40 min, where
+// v8's values are right): order mean -20.63 vs v8 -20.66, size -12.99
+// unchanged. The gain lives at the final's horizons, which the backtest
+// cannot see — stated honestly, not hidden.
 //
-// (2) NAMING THRESHOLD PMIN 0.01 (was 0.0005). A coin named at p below
-// the unnamed per-coin probability (~0.007) scores WORSE named than
-// unnamed — it should be left in the unnamed pool. Raising the threshold
-// to 0.01 gains +0.09 on the backtest and, crucially, holds the row count
-// under the 100-rows/place limit at long horizons (see (3)).
+// POISSON CRASH: tested properly for v9 and REJECTED — do not re-add.
+// (1) Backtest: consistently slightly worse than Bernoulli (-0.11
+// standard cuts, -0.02 at cut1). (2) Persistence: the crash fraction is
+// FLAT with lag (0.60 at 10-40 min for one cohort, 0.00-0.20 for the
+// others), not growing as a constant-rate Poisson requires. (3) Long
+// horizon (7-13h reads): Poisson(1.0/hr) COLLAPSES the named mass —
+// named sum 0.13 vs 0.29, top p 0.018 vs 0.041 — the forecast goes
+// nearly flat. (4) Field evidence: v4's no-crash MC scored order -18.29
+// officially, proving the drift+diffusion ranking carries ~6 points of
+// signal at the final; Poisson drowns that signal in iid crash noise.
+// A one-time-death crash (each coin dies once with prob 0.2-0.3, then
+// stable) ties Bernoulli on the backtest and is distributionally neutral
+// at 7-13h — no gain, not shipped either. The Bernoulli crash stays
+// exactly as v6/v7/v8 (a no-op at hourly steps, +0.81 over no-crash at
+// 10-30 min horizons where it does differentiate).
 //
-// (3) HARD 100-ROWS/PLACE CAP. RULES.txt: a place has at most 100 rows;
-// over that, the forecast is no forecast and scores the floor everywhere.
-// The MC loop had NO cap: on the practice market at 7-13h horizons it
-// emits 106-200 rows/place (diffusion pushes many coins over 0.0005).
-// v4 still scored -40.2 on the final, so the mature final market kept
-// v4 under 100 — but that is luck, not a guarantee. v8 caps each place
-// at 100 rows, keeping every p=0 blocker (they cost nothing and shrink
-// the unnamed divisor) and the highest-p named rows. With PMIN 0.01 the
-// cap is normally a no-op (long-horizon test: 96-99 rows/place).
-//
-// NOT CHANGED (and why): the crash hazard is left EXACTLY as v6/v7.
-// Measured finding (long-horizon test, practice market): with hourly
-// reads the Bernoulli crash check `rng() < 1.0 * dt` is ALWAYS true, so
-// every coin crashes by the same -0.52 every step — a uniform shift,
-// ranking-neutral. v7 CH=1.0 and CH=0 give statistically identical
-// 7-13h forecasts (place-1 top p 0.082 vs 0.072, effN 10.4 vs 10.9).
-// The v6 crash hazard is a NO-OP for order in the final; its +0.67
-// backtest gain does NOT transfer (v6's expected final order is ~-18.29,
-// v5's level, not -17.6). The honest fix is Poisson crashes (a count of
-// crashes per step, rate 1.0/hr), but it is NOT shipped here: the
-// backtest is consistently slightly WORSE with it (-0.07 to -0.13 across
-// PMIN values) and its long-horizon effect (effN 34-105 vs 10-31) is
-// unmeasurable from the 1h practice — over-diffusion risk. It is a v9
-// research item, not a v8 change. TEMP (1.0), VOL (0.30), CH (1.0),
-// DRIFT_HOURS (0.83), crash front-loading (hurts), PMIN 0.0001 (hurts),
-// P0 range to 11-200 (no change — only 1 chart coin) were all swept;
-// none beats the v8 combination. Size model untouched (v7's).
-//
-// Expected final: order ~-17.8 to -18.0 (v5/v4 level -18.29 plus the
-// transferred per-place gain), size ~-13.2 good / ~-13.5 realistic =>
-// total ~-31.0 good, ~-31.5 realistic — beats rank 1 (-31.7) in the
-// good-to-realistic case. Transfer risk (the v4 lesson) remains: the
-// backtest measures 10-30 min horizons, the final reads are 7-13h.
-// All parameters are time-based (per hour), so the code runs the
-// 10-minute practice reads and the hourly final reads unchanged.
+// Everything else is v8 unchanged: P_MIN 0.01, 100-row cap, v7 size
+// model (top-scale-anchored centre + horizon-dependent sd), crash
+// hazard Bernoulli 1.0/hr, ORDER_TEMP 1.0, VOL 0.30, DRIFT_HOURS 0.83.
+// Swept and flat (not shipped): CENTRE_GAP -0.02 (+0.03 size, noise),
+// SIZE_GROWTH 0.35 (+0.05 size, noise), SIZE_SD0 0.26 (worse),
+// P0_GROWTH_MAX 0.2/0.5 (no change), per-read horizon slope for u
+// (helps cut3, hurts cut2/cut1 — the per-read weighting confounds the
+// level; the uniform shift is the clean implementation).
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -97,13 +78,16 @@ const P_MIN = 0.01;
     TEMP < 1 sharpens (more mass on the most likely places). 1.0 = no change. */
 const ORDER_TEMP = 1.0;
 /** Fraction of each place left unnamed (for newcomers born after the cut),
-    per place. Measured over all 10 ordered mark pairs in the practice
-    history, the newcomer share of the top-5 occupant is place 1: 0.80,
-    place 2: 0.70, place 3: 0.50, place 4: 0.70, place 5: 0.50. v8 uses
-    those shares shrunk toward uniform 0.5 (the unshrunk vector scores
-    identically on the backtest mean). Swept: uniform 0.6/0.7/0.8 all worse;
-    per-place gains +0.28 on the backtest, size unchanged. */
-const UNNAMED_SHARE_K = [0.7, 0.6, 0.5, 0.6, 0.5];
+    per place. v8 used [0.7,0.6,0.5,0.6,0.5], measured on the 10-40 min
+    practice lags (newcomer share per place: 0.80/0.70/0.50/0.70/0.50).
+    v9 raises each by +0.1 for the FINAL's 7-13h reads: the newcomer
+    share rises with lag (0.40-0.50 at 10 min -> 0.80 at 30-40 min), and
+    the per-cut backtest confirms longer lags prefer higher u (uniform
+    +0.1: cut3 -0.69, cut2 +0.46, cut1 +0.33, identical across 3 seeds).
+    +0.1 is the measured 30-40 min level, not an extrapolation; +0.2 was
+    rejected (KL downside -0.54 if the final's share does not grow).
+    Size unchanged. */
+const UNNAMED_SHARE_K = [0.8, 0.7, 0.6, 0.7, 0.6];
 /** Monte Carlo paths. */
 const N_PATHS = 4000;
 /** Deterministic seed. */
