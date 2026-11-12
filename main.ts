@@ -1,38 +1,40 @@
-// pumpfun-top5-forecast-01 entry v6: v5 + crash hazard + 6-mark drift window.
+// pumpfun-top5-forecast-01 entry v7: v6 + top-scale-anchored size centre
+// + horizon-dependent size sd.
 //
-// v5 submitted 13:50 WIB (awaiting official score; expected -31.51 good /
-// ~-32.8 realistic). v5's order is expected ~-18.29 (v4's final number);
-// rank 1 is -31.7 (crave: order -18.18, size -13.56), so v6 must improve
-// the ORDER by ~0.7 while keeping v5's size.
+// v6 (submitted 14:23 WIB, ID 01a1cea1, all checks PASS) closed the ORDER
+// gap (+0.67 backtest, crash hazard) but left the size model unchanged
+// (expected -13.22 good case). v7 fixes the SIZE centre, the remaining
+// lever. Measured (practice regression, R2=0.97): the true top-5 caps
+// revert FULLY to the top scale (gap coefficient 1.11) — the top-5 caps
+// at any read are a TIGHT band around the top scale, while v6's centre
+// (cutCap[k] + growth) inherits the cut's spread and is badly wrong at
+// the lower places when the cut is spread (cut2: v6 size -20.64).
 //
-// v6's one order change: a CRASH HAZARD in the Monte Carlo (per-hour
-// probability 1.0 that a coin's log10 cap jumps down by log10(0.3)). It
-// spreads the place mass off the current top coins, which mostly turn over
-// (measured: 15-20% of top-5 coins lose >50% of cap or vanish within
-// 10-20 min; the bottom decile of 10-min top-coin cap changes is -0.67).
-// It also makes the forecast less sensitive to Monte Carlo noise.
-// v6 also sets the drift window to 6 marks (DRIFT_HOURS 0.83; user:
-// "mark 6"). The drift window is unidentifiable on the 1h practice
-// (drift is dwarfed by volatility at 10-50 min horizons), so 6 marks is
-// adopted literally with zero change to the practice score.
+// v7 centre[k] = 0.2*cutCap[k] + 0.8*cutCap[0] + 0.30*sqrt(dt)
+// (75% anchored to the top scale = place-1 cap at the cut). And the size
+// sd grows with horizon: sd(dt) = sqrt(0.22^2 + (0.065*sqrt(dt))^2) —
+// ~0.22 on the backtest (centre accurate) widening to ~0.30 at the final
+// (centre error from top-scale growth uncertainty ~0.065).
 //
-// Measured on the practice backtest with the OFFICIAL ranked.ts scorer
-// (unnamed mass shared over the answer chart's ids NOT named — the v5
-// backtest used the wrong divisor (100 - named count) and overstated the
-// order; the corrected v5 baseline is cut=3 order -16.06, cut=2 -25.16):
-//   v6 order: cut=3 -15.79, cut=2 -23.92 (mean -19.85, seed 20261112;
-//   -19.89 averaged over seeds 1/7/20261112)
-//   v5 order: cut=3 -16.06, cut=2 -25.16 (mean -20.61; -20.57 over seeds)
-//   => v6 improves the backtest order by +0.67 on average, consistent
-//   across seeds. Size is unchanged (the size model ignores the Monte
-//   Carlo histogram): cut=3 -14.08, cut=2 -20.64, identical to v5.
-// Expected final: order ~-17.6 to -18.0 (if the +0.67 transfers), size
-// -13.22 good / ~-14.5 realistic => total ~-30.8 good, ~-32.3 realistic.
-// Rank 1 (-31.7) is beatable in the good case; the -30.83 stretch target
-// needs order -17.61 AND size -13.22 together.
-// All parameters are time-based (per hour), so the code runs the 10-minute
-// practice reads and the hourly final reads unchanged.
-
+// Measured on the practice backtest with the OFFICIAL ranked.ts scorer:
+//   v7: order cut2 -23.92, cut3 -15.79 (mean -19.85, = v6 — order
+//   unchanged); size cut2 -12.88, cut3 -13.09 (mean -12.99);
+//   log mean -32.84.
+//   v6: order mean -19.85; size mean -17.36; log mean -37.21.
+//   => v7 improves the backtest log by +4.37, ALL from size (+4.37:
+//   -17.36 -> -12.99). Both cuts agree (cut2 -12.88, cut3 -13.09).
+//   Deterministic; multi-seed order spread +/-0.04; TEMP flat (1.0 kept).
+// Transfer: the centre structure (tight top-5, mean reversion) is
+// structural and should transfer; the size gain on the final is likely
+// ~+1.0 (the tight-cut gain) rather than the full +4.37 (which includes
+// the spread-cut gain). Expected final: order ~-17.6 to -18.0 (as v6),
+// size ~-12.2 good / ~-13.5 realistic => total ~-29.8 good, ~-31.3
+// realistic — beats rank 1 (-31.7) in the good-to-realistic case.
+// The size transfer risk (v4 lesson) remains: backtest size does not
+// predict final size, but the centre is now calibrated to the true
+// structure instead of the cut's spread, which is the sounder basis.
+// All parameters are time-based (per hour), so the code runs the
+// 10-minute practice reads and the hourly final reads unchanged.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -96,8 +98,25 @@ const CRASH_HAZARD = 1.0;
 /** Multiplicative crash factor on the cap (0.3 = log10 -0.52; the bottom
     decile of top-coin 10-min cap changes is ~-0.67). */
 const CRASH_FACTOR = 0.3;
-/** SD of each place's size Normal (log10 cap). */
-const SIZE_SD = 0.32;
+/** Base SD of each place's size Normal (log10 cap). The SD grows with
+    horizon: sd(dt) = sqrt(SIZE_SD0^2 + (SIZE_SD_GROWTH*sqrt(dt))^2).
+    Rationale: the centre error grows with horizon (top-scale growth-rate
+    uncertainty ~0.065, from the v1/v4 final calibration: truth is
+    cutCap + 0.85..1.25 at 10h, i.e. SG in [0.27, 0.40]). On the backtest
+    (dt 0.17-0.5h) sd ~0.22 (the backtest optimum, size -13.01 vs -14.36
+    at 0.32); at the final (dt 7-13h) sd ~0.30, robust to the larger
+    centre error. A constant sharp sd would be punished at long horizons;
+    a constant wide sd wastes the accurate short-horizon centre. */
+const SIZE_SD0 = 0.22;
+const SIZE_SD_GROWTH = 0.065;
+/** v7 size-centre shape: centre[k] = CENTRE_W*cutCap[k] + (1-CENTRE_W)*cutCap[0]
+    + SIZE_GROWTH*sqrt(dt) + CENTRE_GAP*k. v6 is CENTRE_W=1, CENTRE_GAP=0.
+    Measured (practice regression, R2=0.97): the true top-5 caps revert
+    fully to the top scale (gap coefficient 1.11), so CENTRE_W~0 anchors
+    the centre to the top scale instead of each place's own (possibly far
+    below-scale) cut cap. CENTRE_GAP<0 gives the tight top-5 ladder. */
+const CENTRE_W = 0.2;
+const CENTRE_GAP = 0;
 
 interface Row {
   rank: number;
@@ -349,8 +368,9 @@ for (let k = 0; k < places; k++) {
   for (let b = 0; b < nBins; b++) {
     let p = 0;
     for (let j = 0; j < nReads; j++) {
-      const centre = cutCap[k]! + SIZE_GROWTH * Math.sqrt(Math.max(readHours[j]!, 0));
-      p += normalBinProb(b, centre, SIZE_SD);
+      const centre = CENTRE_W * cutCap[k]! + (1 - CENTRE_W) * cutCap[0]! + SIZE_GROWTH * Math.sqrt(Math.max(readHours[j]!, 0)) + CENTRE_GAP * k;
+      const sd = Math.sqrt(SIZE_SD0 * SIZE_SD0 + Math.pow(SIZE_SD_GROWTH * Math.sqrt(Math.max(readHours[j]!, 0)), 2));
+      p += normalBinProb(b, centre, sd);
     }
     p /= Math.max(1, nReads);
     if (p >= 0.0005) sizes.push({ place: k + 1, bin: b, p: Math.round(p * 1e6) / 1e6 });
