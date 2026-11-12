@@ -1,7 +1,7 @@
 {
   "name": "pumpfun-top5-entry",
   "version": "1.0.0",
-  "description": "Pump.fun top-5 forecaster v5: v4 order (p=0 blockers) + sharp Normal sizes",
+  "description": "Pump.fun top-5 forecaster v6: v5 + crash hazard (1.0/hr, x0.3) + 6-mark drift window",
   "type": "module",
   "main": "main.ts",
   "license": "MIT"

@@ -1,32 +1,38 @@
-// pumpfun-top5-forecast-01 entry v5: v4 order + sharp Normal sizes.
+// pumpfun-top5-forecast-01 entry v6: v5 + crash hazard + 6-mark drift window.
 //
-// v1 scored -35.1 (order -19.48, size -15.63), rank 53. v4 scored -40.2
-// (order -18.29 GOOD, size -21.92 CATASTROPHIC), rank 370. The v4 size
-// collapse came from the growth shift (+0.30*sqrt(dt), capped 0.5): the
-// final's true top caps sit AT or BELOW v1's simulation centre, not above
-// it, so shifting up cost ~6.3 size points. v4's cut=2 backtest (-25.73)
-// did NOT transfer to the final's 7-13h reads — the backtest only measures
-// 10-30 min horizons.
+// v5 submitted 13:50 WIB (awaiting official score; expected -31.51 good /
+// ~-32.8 realistic). v5's order is expected ~-18.29 (v4's final number);
+// rank 1 is -31.7 (crave: order -18.18, size -13.56), so v6 must improve
+// the ORDER by ~0.7 while keeping v5's size.
 //
-// v5 keeps v4's ORDER exactly (p=0 blockers, UNNAMED_SHARE 0.5 — proven on
-// the final; TEMP/VOL sharpening was swept and HURT the backtest order, so
-// the Monte Carlo is left unsharpened) and replaces the size model with a
-// SHARP Normal per place (centre cutCap[k] + 0.30*sqrt(dt), sd 0.32).
-// Rationale: size -13.22 needs mean ln(p) -2.64 per place-read, i.e.
-// p ~0.071 per 0.05-wide bin, i.e. sd ~0.28-0.32 with a correct centre.
-// The wide simulation histogram (sd 0.4-0.53) and the wide newcomer
-// mixture (sd 0.66) cap the peak density too low to reach it. The centre
-// is calibrated from the final's v1/v4 evidence: v1's sim centre sits
-// ~0.2-0.6 above the truth, and v1's sim centre is ~cutCap + 1.45, so the
-// truth is ~cutCap + 0.85..1.25 at a ~10h horizon (0.30*sqrt(10) = 0.95).
-// The centre is the risk: a sharp Normal punishes a wrong centre
-// quadratically. Target: order -17.61, size -13.22, total -30.83 (beats
-// rank 1's -31.8). The final's size cannot be verified locally — the
-// backtest measures only 10-30 min horizons, where the top caps grow fast
-// and the truth is volatile, so it favours wide distributions and must NOT
-// be used to tune the final's size.
+// v6's one order change: a CRASH HAZARD in the Monte Carlo (per-hour
+// probability 1.0 that a coin's log10 cap jumps down by log10(0.3)). It
+// spreads the place mass off the current top coins, which mostly turn over
+// (measured: 15-20% of top-5 coins lose >50% of cap or vanish within
+// 10-20 min; the bottom decile of 10-min top-coin cap changes is -0.67).
+// It also makes the forecast less sensitive to Monte Carlo noise.
+// v6 also sets the drift window to 6 marks (DRIFT_HOURS 0.83; user:
+// "mark 6"). The drift window is unidentifiable on the 1h practice
+// (drift is dwarfed by volatility at 10-50 min horizons), so 6 marks is
+// adopted literally with zero change to the practice score.
+//
+// Measured on the practice backtest with the OFFICIAL ranked.ts scorer
+// (unnamed mass shared over the answer chart's ids NOT named — the v5
+// backtest used the wrong divisor (100 - named count) and overstated the
+// order; the corrected v5 baseline is cut=3 order -16.06, cut=2 -25.16):
+//   v6 order: cut=3 -15.79, cut=2 -23.92 (mean -19.85, seed 20261112;
+//   -19.89 averaged over seeds 1/7/20261112)
+//   v5 order: cut=3 -16.06, cut=2 -25.16 (mean -20.61; -20.57 over seeds)
+//   => v6 improves the backtest order by +0.67 on average, consistent
+//   across seeds. Size is unchanged (the size model ignores the Monte
+//   Carlo histogram): cut=3 -14.08, cut=2 -20.64, identical to v5.
+// Expected final: order ~-17.6 to -18.0 (if the +0.67 transfers), size
+// -13.22 good / ~-14.5 realistic => total ~-30.8 good, ~-32.3 realistic.
+// Rank 1 (-31.7) is beatable in the good case; the -30.83 stretch target
+// needs order -17.61 AND size -13.22 together.
 // All parameters are time-based (per hour), so the code runs the 10-minute
 // practice reads and the hourly final reads unchanged.
+
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,7 +42,7 @@ const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
 // ---- Tuned parameters (time-based, per hour) ----
 /** Hours of history used for the drift slope. */
-const DRIFT_HOURS = 1.0;
+const DRIFT_HOURS = 0.83; // 6 marks at 10-min cadence (user: 'mark 6').
 /** Shrink a coin's drift by n/(n+SHRINK_K), n = number of marks it appears in. */
 const SHRINK_K = 2;
 /** Scale the (shrunk) drift: half momentum, to avoid overcommitting to a hot coin. */
@@ -81,6 +87,15 @@ const P0_GROWTH_MAX = 0.3;
 //     gives +0.95 at 10h. The centre is the risk: a sharp Normal punishes
 //     a wrong centre quadratically, so SIZE_SD 0.32 is sharp but not extreme.
 const SIZE_GROWTH = 0.3;
+/** Per-hour crash hazard (v6): with this probability per hour, a coin's
+    log10 cap jumps down by log10(CRASH_FACTOR). Measured: ~15-20% of top-5
+    coins lose >50% of cap (or vanish) within 10-20 min, i.e. hazard
+    ~1/hr; the crash spreads the Monte Carlo place mass off the current
+    top coins, which mostly turn over. Backtest order gain +0.67 vs v5. */
+const CRASH_HAZARD = 1.0;
+/** Multiplicative crash factor on the cap (0.3 = log10 -0.52; the bottom
+    decile of top-coin 10-min cap changes is ~-0.67). */
+const CRASH_FACTOR = 0.3;
 /** SD of each place's size Normal (log10 cap). */
 const SIZE_SD = 0.32;
 
@@ -219,6 +234,11 @@ for (let p = 0; p < N_PATHS; p++) {
     for (let i = 0; i < live.length; i++) {
       const d = (live[i] as Coin & { drift: number }).drift;
       caps[i] += d * dt + sd * randn(rng);
+      // Crash hazard: with prob CRASH_HAZARD*dt the coin's cap jumps down
+      // by log10(CRASH_FACTOR) — top coins collapse and free up places.
+      if (CRASH_HAZARD > 0 && rng() < CRASH_HAZARD * dt) {
+        caps[i] += Math.log10(Math.max(CRASH_FACTOR, 1e-6));
+      }
     }
     // Rank by simulated cap, descending.
     for (let i = 0; i < live.length; i++) order[i] = i;

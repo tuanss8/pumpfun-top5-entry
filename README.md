@@ -1,69 +1,57 @@
-# Pump.fun top-5 forecaster v5
+# Pump.fun top-5 forecaster v6
 
-**Target: order -17.61, size -13.22, total -30.83 (beats rank 1's -31.8).**
+**Target: rank 1 (now crave -31.7). Stretch: order -17.61, size -13.22, total -30.83.**
 
-## What v5 is
+## What v6 is
 
-- **Order: identical to v4** (p=0 blockers at ranks 11-100, UNNAMED_SHARE 0.5,
-  Monte Carlo log10-cap random walk, VOL 0.30/hr, TEMP 1.0). v4's order scored
-  **-18.29 on the final** (rank 1: -17.61). A TEMP/VOL sweep (TEMP 0.7-1.0,
-  VOL 0.20-0.30) was run on the backtest + last-read order: sharpening HURT
-  the order in every case, so the Monte Carlo is left unsharpened. The order
-  gap to -17.61 (0.68) cannot be closed by calibration in this model family;
-  it would need a better ranking model.
-- **Size: sharp Normal per place** (centre `cutCap[k] + 0.30*sqrt(dt_hours)`,
-  sd 0.32), replacing v4's growth-shifted simulation histogram and the
-  wide newcomer mixture. Rationale:
-  - v1's sim size scored -15.63; v4's shifted sim scored -21.92. The best
-    size on the board is -13.67 (crave), which needs a SHARP distribution
-    (mean ln(p) -2.73 per place-read, p ~0.065 per 0.05-wide bin, sd ~0.31
-    with a correct centre). The wide sim histogram (sd 0.4-0.53) and the
-    wide newcomer mixture (sd 0.66) cap the peak density too low.
-  - Centre calibrated from the final's v1/v4 evidence: v1's sim centre sits
-    ~0.2-0.6 above the truth, and v1's sim centre is ~cutCap + 1.45
-    (random-walk max effect), so the truth is ~cutCap + 0.85..1.25 at a
-    ~10h mean horizon (0.30*sqrt(10) = 0.95). Long-horizon centre (place 1)
-    is 4.50, vs v1's 5.01 and v4's 5.46.
-  - The centre is the risk: a sharp Normal punishes a wrong centre
-    quadratically. SD 0.32 is sharp but not extreme.
+v5 + one order change: a **crash hazard** in the Monte Carlo, plus a **6-mark drift window**.
 
-## Measured (practice scorer — read the caveat)
+- **Order: v5's model + crash hazard.** Per hour, each coin's log10 cap jumps
+  down by log10(0.3) with probability 1.0. Measured: 15-20% of top-5 coins
+  lose >50% of cap (or vanish) within 10-20 min; the bottom decile of 10-min
+  top-coin cap changes is -0.67. The hazard spreads the Monte Carlo place
+  mass off the current top coins, which mostly turn over, and makes the
+  forecast less sensitive to Monte Carlo noise. Drift window set to 6 marks
+  (DRIFT_HOURS 0.83; user: "mark 6") — the drift window is unidentifiable on
+  the 1h practice (drift is dwarfed by volatility at 10-50 min horizons), so
+  6 marks is adopted literally with zero change to the practice score.
+- **Size: identical to v5** (sharp Normal per place, centre
+  `cutCap[k] + 0.30*sqrt(dt_hours)`, sd 0.32). The size model ignores the
+  Monte Carlo histogram, so the crash hazard does not touch the size score.
 
-- Deterministic (two runs byte-identical). Output valid (probabilities
-  <=100 rows/place, per-place sums <=1; sizes <=82 bins/place, sums <=1;
-  top5 5 distinct mints, all in the history).
-- Last-read order (chart=100): **-9.435**, identical to v4.
-- Backtest cut=2 (2 reads, 10-20 min): order **-12.20**, size **-14.08**,
-  log **-26.27**. (v4: -12.20/-9.68/-21.87; v1: -17.12/-15.15/-32.27.)
-- Backtest cut=1 (3 reads, 10-30 min): order **-11.64**, size **-20.64**,
-  log **-32.27**. (v4: -11.64/-30.12/-41.76; v1: -25.29/-36.93/-62.22.)
-- Long-horizon size (7-13h reads): place 1 (mean 4.50, sd 0.33),
-  place 5 (4.22, 0.33).
+## Measured (practice backtest, OFFICIAL ranked.ts scorer)
 
-**Caveat (important):** the backtest measures only 10-30 min horizons,
-where the top caps grow fast and the truth is volatile, so it favours wide
-distributions. v4's backtest size (-9.68) did NOT transfer to the final
-(-21.92). The backtest size must NOT be used to tune the final's size; the
-final's size can only be reasoned about from the v1/v4 final evidence and
-the board's best entries. The order, by contrast, transferred (v4's backtest
-order -12.20/-11.64 vs final -18.29, same relative standing).
+Important correction vs the v5 report: the v5 backtest used the wrong
+unnamed divisor (100 - named count). The official rule shares the unnamed
+mass over the **answer chart's ids NOT named** (divisor ~70, not ~5, because
+the answer chart is full of newcomers). The corrected v5 baseline is
+cut=3 order -16.06, cut=2 order -25.16 — much closer to v4's final -18.29.
 
-## Honest assessment vs the -30.83 target
+| config | cut=3 order | cut=2 order | mean order |
+|---|---|---|---|
+| v5 | -16.06 | -25.16 | -20.61 |
+| **v6 (crash 1.0)** | **-15.79** | **-23.92** | **-19.85** |
 
-- Order: expected ~**-18.29** (v4's final number; the order code is
-  unchanged). The -17.61 target is 0.68 away and not reachable by
-  calibration in this family. **Order gap: -0.68.**
-- Size: expected **-13.22 if the centre is right** (within ~0.15), degrading
-  to ~-14.5 at centre error 0.2 and ~-16 at error 0.3. The centre (4.50) is
-  calibrated from the v1/v4 final evidence but carries ±0.3 uncertainty.
-- Total: **-31.51 in the good case** (beats rank 1's -31.8), **~-32.8 in the
-  realistic case** (rank ~8-12), **~-35 in the bad case** (centre off by
-  0.4). The -30.83 target needs BOTH order -17.61 (not reachable here) AND
-  size -13.22 (reachable only if the centre is right). It is a stretch
-  target, not a forecast.
+Mean over seeds 1/7/20261112: v5 -20.57, v6 -19.89 — **+0.67 order, consistent
+across seeds**. Size identical to v5 (cut=3 -14.08, cut=2 -20.64).
+u-sweep on the corrected scorer is flat (best u=0.6 -20.55 vs u=0.5 -20.61),
+so UNNAMED_SHARE stays 0.5. Breakout: no effect (dropped). TEMP/VOL
+sharpening: hurt (v5). Growth-shifted sizes, wide newcomer mixture,
+decoupled Normal size: all previously rejected, not retried.
 
-## Files
+## Expected final
 
-- `main.ts` — the entry (Node 22, stdlib only, deterministic).
-- `LICENSE` — MIT, SPDX line present (required for submission).
-- `package.json`, `README.md`.
+Order ~-17.6 to -18.0 (if the +0.67 backtest gain transfers), size -13.22
+good / ~-14.5 realistic => total ~-30.8 good, ~-32.3 realistic. Rank 1
+(-31.7) is beatable in the good case. The -30.83 stretch target needs order
+-17.61 AND size -13.22 together. Transfer risk: the backtest measures
+10-50 min horizons; the final reads are 7-13h out, where the crash hazard
+compounds — CH=1.0 matches the measured hourly hazard, while CH=2-3 scored
+slightly better on the backtest (+0.85) but risks over-diffusion at long
+horizons, so 1.0 was chosen.
+
+## Status
+
+Built 2026-11-12. NOT pushed, NOT submitted. Deadline tonight 21:00 WIB.
+5 slots left (5/10 used). v5 (round 5) is submitted and awaiting its
+official score.
