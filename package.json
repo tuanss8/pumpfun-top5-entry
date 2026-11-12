@@ -1,0 +1,8 @@
+{
+  "name": "pumpfun-top5-entry",
+  "version": "1.0.0",
+  "description": "Pump.fun top-5 forecaster: Monte Carlo log10-cap random walk with newcomer mass",
+  "type": "module",
+  "main": "main.ts",
+  "license": "MIT"
+}
